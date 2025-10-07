@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from .models import kinesiologo, paciente, cita, reseña
 from django.utils import timezone
+from .modulo_ia import analizar_sentimiento
 
 class kinesiologoSerializer(serializers.ModelSerializer):
     class Meta:
@@ -43,9 +44,11 @@ class citaSerializer(serializers.ModelSerializer):
         return value
     
     def validate(self, data):
-        if not data.get('paciente'):
+        paciente = data.get('paciente') or getattr(self.instance, 'paciente', None)
+        kinesiologo = data.get('kinesiologo') or getattr(self.instance, 'kinesiologo', None)
+        if not paciente:
             raise serializers.ValidationError("Se debe asignar un paciente válido.")
-        if not data.get('kinesiologo'):
+        if not kinesiologo:
             raise serializers.ValidationError("Se debe asignar un kinesiólogo válido")
         return data
 
@@ -60,7 +63,14 @@ class reseñaSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("No se puede crear una reseña para una cita que no está completada.")
         
         #Verificar que no exista una reseña para la misma cita
-        if hasattr(cita, 'reseña'):
+        if reseña.objects.filter(cita=cita).exists():
             raise serializers.ValidationError("Ya existe una reseña para esta cita.")
         
         return data
+    
+    def create(self, validated_data): #se sobreescribe el método create para agregar el análisis de sentimiento
+        # Analizar el sentimiento del texto de la reseña utilizando el módulo de IA
+        texto = validated_data.get('comentario')
+        sentimiento = analizar_sentimiento(texto) #devuelve 'positiva', 'neutral' o 'negativa'
+        validated_data['sentimiento'] = sentimiento
+        return super().create(validated_data)

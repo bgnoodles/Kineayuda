@@ -2,6 +2,7 @@ from rest_framework import serializers
 from .models import kinesiologo, paciente, cita, reseña
 from django.utils import timezone
 from .modulo_ia import analizar_sentimiento
+from .utils.rut import normalizar_rut, formatear_rut
 
 class kinesiologoSerializer(serializers.ModelSerializer):
     class Meta:
@@ -12,6 +13,20 @@ class kinesiologoSerializer(serializers.ModelSerializer):
         if value not in dict(kinesiologo.ESTADO_VERIFICACION):
             raise serializers.ValidationError("Estado de verificación inválido.")
         return value
+    
+    def validate_rut(self, value):
+        try:
+            return normalizar_rut(value)
+        except ValueError as e:
+            raise serializers.ValidationError(str(e))
+    
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        try:
+            data['rut'] = formatear_rut(data['rut'])
+        except Exception:
+            pass
+        return data
 
 class pacienteSerializer(serializers.ModelSerializer):
     class Meta:
@@ -27,6 +42,20 @@ class pacienteSerializer(serializers.ModelSerializer):
         if not value:
             raise serializers.ValidationError("El apellido del paciente es obligatorio.")
         return value
+    
+    def validate_rut(self, value):
+        try:
+            return normalizar_rut(value)
+        except ValueError as e:
+            raise serializers.ValidationError(str(e))
+    
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        try:
+            data['rut'] = formatear_rut(data['rut'])
+        except Exception:
+            pass
+        return data
 
 class citaSerializer(serializers.ModelSerializer):
     class Meta:

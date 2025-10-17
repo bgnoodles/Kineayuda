@@ -126,3 +126,15 @@ STATIC_URL = 'static/'
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+import firebase_admin
+from firebase_admin import credentials
+import os
+
+#Ruta al archivo de credenciales de Firebase
+FIREBASE_CRED_PATH = os.path.join(BASE_DIR, 'firebase_credentials.json')
+
+# Inicializar la aplicación de Firebase
+if not firebase_admin._apps: # Evitar icializaciones múltiples
+    cred = credentials.Certificate("path/to/serviceAccountKey.json")
+    firebase_admin.initialize_app(cred)

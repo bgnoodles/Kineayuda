@@ -29,6 +29,7 @@ class kinesiologo (models.Model):
 class paciente(models.Model):
     nombre = models.CharField(max_length=100)
     apellido = models.CharField(max_length=100)
+    rut = models.CharField(max_length=15, unique=True, null=False)
     email = models.EmailField(unique=True)
     telefono = models.CharField(max_length=20)
     fecha_nacimiento = models.DateField()
@@ -70,3 +71,5 @@ class reseña(models.Model):
 
     def __str__(self):
         return f"Reseña cita {self.cita.id} - {self.sentimiento}"
+
+#CLASE PAGO QUE CREA LA TABLA PAGO EN LA BD POSTGRE

@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import kinesiologo, paciente, cita, reseña
+from .models import kinesiologo, paciente, cita, reseña, agenda
 from django.utils import timezone
 from .modulo_ia import analizar_sentimiento
 from .utils.rut import normalizar_rut, formatear_rut
@@ -103,3 +103,23 @@ class reseñaSerializer(serializers.ModelSerializer):
         sentimiento = analizar_sentimiento(texto) #devuelve 'positiva', 'neutral' o 'negativa'
         validated_data['sentimiento'] = sentimiento
         return super().create(validated_data)
+    
+class agendaSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = agenda
+        fields = '__all__'
+        read_only_fields = ['estado', 'paciente', 'cita', 'kinesiologo', 'fecha_creacion']
+    
+    def validate(self, data):
+        inicio = data.get('inicio')
+        fin = data.get('fin')
+        if not inicio or not fin:
+            raise serializers.ValidationError("Se deben proporcionar tanto la hora de inicio como la de fin.")
+        
+        if inicio >= fin:
+            raise serializers.ValidationError("La hora de inicio debe ser anterior a la hora de fin.")
+        
+        if inicio < timezone.now():
+            raise serializers.ValidationError("La hora de inicio no puede ser en el pasado.")
+        
+        return data

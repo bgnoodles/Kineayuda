@@ -1,6 +1,7 @@
 from django.shortcuts import render
 from django.utils import timezone
 from django.db import transaction
+from django.db.models import Q
 from rest_framework import viewsets, status, mixins
 from rest_framework.response import Response
 from rest_framework.decorators import api_view, permission_classes
@@ -9,7 +10,7 @@ from rest_framework.generics import ListAPIView
 from rest_framework.views import APIView
 from .models import kinesiologo, paciente, cita, reseña, agenda
 from firebase_admin import auth
-from .serializer import kinesiologoSerializer, pacienteSerializer, citaSerializer, reseñaSerializer
+from .serializer import kinesiologoSerializer, pacienteSerializer, citaSerializer, reseñaSerializer, agendaSerializer
 from .utils.auth_helpers import get_kinesiologo_from_request
 # Create your views here.
 
@@ -104,6 +105,35 @@ class HorasDisponiblesView(APIView):
         } for slot in slots]
         return Response(data, status=status.HTTP_200_OK)
 
+class AgendaViewSet(viewsets.ModelViewSet):
+    serializer_class = agendaSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        kx = get_kinesiologo_from_request(self.request)
+        if not kx:
+            return agenda.objects.none()
+        #Devuelve solo los horarios de la agenda del kinesiologo autenticado
+        return agenda.objects.filter(kinesiologo=kx).order_by('inicio')
+
+    def perform_create(self, serializer):
+        kx = get_kinesiologo_from_request(self.request)
+        if not kx:
+            raise PermissionError("Kinesiologo no autenticado.")
+        inicio = serializer.validated_data['inicio']
+        fin = serializer.validated_data['fin']
+        #Validar que no exista un horario solapado
+        solapa = agenda.objects.filter(kinesiologo=kx, estado__in=['disponible', 'reservado', 'no_disponible'],).filter(Q(inicio__lt=fin) & Q(fin__gt=inicio)).exists()
+        if solapa:
+            raise ValueError("El horario solapa con otro existente.")
+        #Asocia el horario al kinesiologo autenticado
+        serializer.save(kinesiologo=kx, estado='disponible')
+    
+    def perform_destroy(self, instance):
+        if instance.estado == 'reservado':
+            raise ValueError("No se puede eliminar un horario que ya está reservado. Cancele la cita primero.")
+        instance.delete()
+
 class AgendarCitaView(APIView):
     permission_classes = [AllowAny]
     
@@ -111,7 +141,7 @@ class AgendarCitaView(APIView):
     def post(self, request):
         """Permite a un paciente agendar una cita en un horario disponible."""
         #validar que existe el cupo
-        slot_id = request.data.get('slot_id')
+        slot_id = request.data.get('id')
         if not slot_id:
             return Response({'error': 'slot_id es requerido.'}, status=status.HTTP_400_BAD_REQUEST)
         try:
@@ -125,15 +155,15 @@ class AgendarCitaView(APIView):
         
         #Crear o reutilizar paciente según el RUT
         rut = request.data.get('rut')
-        paciente = paciente.objects.filter(rut__iexact=rut).first()
-        if not paciente:
+        paciente_obj = paciente.objects.filter(rut__iexact=rut).first()
+        if not paciente_obj:
             paciente_serializer = pacienteSerializer(data=request.data)
             paciente_serializer.is_valid(raise_exception=True)
-            paciente = paciente_serializer.save()
+            paciente_obj = paciente_serializer.save()
         
         #Crear la cita asociada al cupo
         nueva_cita = cita.objects.create(
-            paciente=paciente,
+            paciente=paciente_obj,
             kinesiologo=slot.kinesiologo,
             fecha_hora=slot.inicio,
             estado='pendiente',
@@ -142,7 +172,7 @@ class AgendarCitaView(APIView):
 
         #Marcar el cupo como reservado
         slot.estado = 'reservado'
-        slot.paciente = paciente
+        slot.paciente = paciente_obj
         slot.cita = nueva_cita
         slot.save()
 

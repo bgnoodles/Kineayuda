@@ -95,3 +95,32 @@ class agenda(models.Model):
     
     def activa_para_reserva(self):
         return (self.estado == 'disponible' and self.inicio >= timezone.now())
+
+#CLASE METODOPAGO QUE CREA LA TABLA METODOPAGO EN LA BD POSTGRE
+class metodoPago(models.Model):
+    nombre = models.CharField(max_length=100)
+    codigo_interno = models.CharField(max_length=50, unique=True)
+    activo = models.BooleanField(default=True)
+
+    def __str__(self):
+        return self.nombre
+
+#CLASE PAGOSUSCRIPCION QUE CREA LA TABLA PAGOSUSCRIPCION EN LA BD POSTGRE
+class pagoSuscripcion(models.Model):
+    ESTADO_TRANSACCION = [
+        ('pendiente', 'pendiente'),
+        ('pagado', 'pagado'),
+        ('fallido', 'fallido'),
+        ('expirado', 'expirado'),
+    ]
+
+    kinesiologo = models.ForeignKey(kinesiologo, on_delete=models.CASCADE, related_name='pagos_suscripcion')
+    metodo = models.ForeignKey(metodoPago, on_delete=models.SET_NULL, null=True, related_name='transacciones')
+    monto = models.DecimalField(max_digits=10, decimal_places=2)
+    estado = models.CharField(max_length=20, choices=ESTADO_TRANSACCION, default='pendiente')
+    transa_id_externo = models.CharField(max_length=200, blank=True, null=True)
+    fecha_pago = models.DateTimeField(auto_now_add=True)
+    fecha_creacion = models.DateTimeField(blank=True, null=True)
+
+    def __str__(self):
+        return f"{self.kinesiologo.nombre} {self.kinesiologo.apellido} - {self.estado} - {self.monto} CLP"

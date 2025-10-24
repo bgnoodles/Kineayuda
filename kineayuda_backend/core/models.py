@@ -1,4 +1,5 @@
 from django.db import models
+from django.utils import timezone
 
 # Create your models here.
 
@@ -72,4 +73,25 @@ class reseña(models.Model):
     def __str__(self):
         return f"Reseña cita {self.cita.id} - {self.sentimiento}"
 
-#CLASE PAGO QUE CREA LA TABLA PAGO EN LA BD POSTGRE
+#CLASE AGENDA QUE CREA LA TABLA AGENDA EN LA BD POSTGRE
+class agenda(models.Model):
+    ESTADO_HORARIO = [
+        ('disponible', 'disponible'),
+        ('reservado', 'reservado'),
+        ('no_disponible', 'no_disponible'),
+        ('expirado', 'expirado'),
+    ]
+
+    kinesiologo = models.ForeignKey(kinesiologo, on_delete=models.CASCADE, related_name='agenda')
+    inicio = models.DateTimeField()
+    fin = models.DateTimeField()
+    estado = models.CharField(max_length=20, choices=ESTADO_HORARIO, default='disponible')
+    paciente = models.ForeignKey('paciente', on_delete=models.SET_NULL, blank=True, null=True, related_name='cupo_reservado')
+    cita = models.OneToOneField('cita', on_delete=models.SET_NULL, blank=True, null=True, related_name='cupo_agenda')
+    fecha_creacion = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.kinesiologo.nombre} {self.kinesiologo.apellido} - {self.inicio} a {self.fin} ({self.estado})"
+    
+    def activa_para_reserva(self):
+        return (self.estado == 'disponible' and self.inicio >= timezone.now())

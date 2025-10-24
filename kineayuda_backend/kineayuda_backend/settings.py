@@ -136,5 +136,14 @@ FIREBASE_CRED_PATH = os.path.join(BASE_DIR, 'firebase_credentials.json')
 
 # Inicializar la aplicación de Firebase
 if not firebase_admin._apps: # Evitar icializaciones múltiples
-    cred = credentials.Certificate("path/to/serviceAccountKey.json")
+    cred = credentials.Certificate(FIREBASE_CRED_PATH)
     firebase_admin.initialize_app(cred)
+
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': (
+        'core.authentication.FirebaseAuthentication',
+    ),
+    'DEFAULT_PERMISSION_CLASSES': (
+        'rest_framework.permissions.IsAuthenticated',
+    ),
+}

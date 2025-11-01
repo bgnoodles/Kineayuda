@@ -117,10 +117,18 @@ class pagoSuscripcion(models.Model):
     kinesiologo = models.ForeignKey(kinesiologo, on_delete=models.CASCADE, related_name='pagos_suscripcion')
     metodo = models.ForeignKey(metodoPago, on_delete=models.SET_NULL, null=True, related_name='transacciones')
     monto = models.DecimalField(max_digits=10, decimal_places=2)
-    estado = models.CharField(max_length=20, choices=ESTADO_TRANSACCION, default='pendiente')
+    estado = models.CharField(max_length=20, choices=ESTADO_TRANSACCION, default='pendiente', db_index=True)
+    orden_comercio= models.CharField(max_length=120, unique=True, blank=True, null=True)
     transa_id_externo = models.CharField(max_length=200, blank=True, null=True)
     fecha_pago = models.DateTimeField(auto_now_add=True)
+    fecha_expiracion = models.DateTimeField(blank=True, null=True, db_index=True)
     fecha_creacion = models.DateTimeField(blank=True, null=True)
+    #Auditoria
+    raw_payload = models.JSONField(blank=True, null=True) #Cuerpo del webhook recibido para trazabilidad
 
     def __str__(self):
         return f"{self.kinesiologo.nombre} {self.kinesiologo.apellido} - {self.estado} - {self.monto} CLP"
+    
+    @property
+    def activa(self) -> bool:
+        return self.estado == 'pagado' and self.fecha_expiracion and self.fecha_expiracion > timezone.now()

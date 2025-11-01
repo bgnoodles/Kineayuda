@@ -1,4 +1,5 @@
 from django.shortcuts import render
+from datetime import timedelta
 from django.utils import timezone
 from django.db import transaction
 from django.db.models import Q
@@ -8,10 +9,11 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.generics import ListAPIView
 from rest_framework.views import APIView
-from .models import kinesiologo, paciente, cita, reseña, agenda
+from .models import kinesiologo, paciente, cita, reseña, agenda, metodoPago, pagoSuscripcion
 from firebase_admin import auth
-from .serializer import kinesiologoSerializer, pacienteSerializer, citaSerializer, reseñaSerializer, agendaSerializer
-from .utils.auth_helpers import get_kinesiologo_from_request
+from .serializer import kinesiologoSerializer, pacienteSerializer, citaSerializer, reseñaSerializer, agendaSerializer, metodoPagoSerializer, pagoSuscripcionSerializer
+from .utils.auth_helpers import get_kinesiologo_from_request, kinesio_tiene_suscripcion_activa
+import uuid
 # Create your views here.
 
 class kinesiologoViewSet(viewsets.ModelViewSet):
@@ -199,3 +201,96 @@ def me(request):
     if not kx:
         return Response({'detail': 'Kinesiologo no encontrado. ¿Ya registraste tu cuenta?'}, status=404)
     return Response(kinesiologoSerializer(kx).data)
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def lista_metodos_pago(request):
+    qs = metodoPago.objects.filter(activo=True)
+    return Response(metodoPagoSerializer(qs, many=True).data, status=200)
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def iniciar_pago_suscripcion(request):
+    kx = get_kinesiologo_from_request(request)
+    if not kx:
+        return Response({"error": "Perfil de kinesiólogo no encontrado"}, status=404)
+
+    metodo_code = request.data.get('metodo')
+    monto = request.data.get('monto')
+
+    if not metodo_code or monto is None:
+        return Response({"error": "Campos 'metodo' y 'monto' son requeridos"}, status=400)
+
+    metodo = metodoPago.objects.filter(codigo_interno=metodo_code, activo=True).first()
+    if not metodo:
+        return Response({"error": "Método de pago no disponible"}, status=400)
+
+    # Generar identificador de orden interno
+    orden = str(uuid.uuid4())[:12]
+
+    pago = pagoSuscripcion.objects.create(
+        kinesiologo=kx,
+        metodo=metodo,
+        monto=monto,
+        estado='pendiente',
+        orden_comercio=orden,
+        fecha_creacion=timezone.now()
+    )
+
+    # Placeholder de URL (Transbank o MercadoPago)
+    redirect_url = f"https://sandbox.proveedor.com/pagar?orden={orden}"
+
+    return Response({
+        "mensaje": "Orden creada exitosamente",
+        "orden_comercio": orden,
+        "pago": pagoSuscripcionSerializer(pago).data,
+        "redirect_url": redirect_url
+    }, status=201)
+
+@api_view(['POST'])
+@permission_classes([AllowAny])  # proveedor no manda token
+def webhook_pago(request, proveedor: str):
+    data = request.data
+    orden = data.get('orden_comercio')
+    estado = data.get('estado')
+    transa_id = data.get('transa_id_externo')
+
+    if not orden:
+        return Response({"error": "orden_comercio requerido"}, status=400)
+
+    try:
+        pago = pagoSuscripcion.objects.get(orden_comercio=orden)
+    except pagoSuscripcion.DoesNotExist:
+        return Response({"error": "Orden no encontrada"}, status=404)
+
+    pago.raw_payload = data
+    pago.transa_id_externo = transa_id
+
+    if estado == 'pagado':
+        pago.estado = 'pagado'
+        pago.fecha_expiracion = timezone.now() + timedelta(days=30)
+    elif estado in ['pendiente', 'fallido', 'expirado']:
+        pago.estado = estado
+    else:
+        pago.estado = 'fallido'
+
+    pago.save()
+    return Response({"mensaje": "actualizado correctamente"}, status=200)
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def estado_suscripcion(request):
+    kx = get_kinesiologo_from_request(request)
+    if not kx:
+        return Response({"error": "Perfil no encontrado"}, status=404)
+
+    ultimo_pago = pagoSuscripcion.objects.filter(kinesiologo=kx).order_by('-fecha_pago').first()
+
+    activa = kinesio_tiene_suscripcion_activa(kx)
+    vence = ultimo_pago.fecha_expiracion if ultimo_pago else None
+
+    return Response({
+        "activa": activa,
+        "vence": vence,
+        "ultimo_pago": pagoSuscripcionSerializer(ultimo_pago).data if ultimo_pago else None
+    }, status=200)

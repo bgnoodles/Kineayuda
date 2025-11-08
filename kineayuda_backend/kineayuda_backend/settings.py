@@ -147,3 +147,5 @@ REST_FRAMEWORK = {
         'rest_framework.permissions.IsAuthenticated',
     ),
 }
+
+BACKEND_BASE_URL = "http://127.0.0.1:8000"

@@ -1,7 +1,8 @@
 from rest_framework import routers
 from django.urls import path, include
 from .views import (kinesiologoViewSet, pacienteViewSet, citaViewSet, reseñaViewSet, verificar_firebase_token, me, AgendaViewSet, 
-                    AgendarCitaView, HorasDisponiblesView, KinesiologosPublicosView, ReseñasPublicasView, lista_metodos_pago, iniciar_pago_suscripcion, webhook_pago, estado_suscripcion)
+                    AgendarCitaView, HorasDisponiblesView, KinesiologosPublicosView, ReseñasPublicasView, lista_metodos_pago, iniciar_pago_suscripcion, 
+                    webhook_pago, estado_suscripcion, webpay_iniciar_suscripcion, webpay_retorno)
 
 router = routers.DefaultRouter()
 router.register(r'kinesiologos', kinesiologoViewSet, basename='kinesiologo')
@@ -21,5 +22,7 @@ urlpatterns = [
     path('pagos/metodos/', lista_metodos_pago),
     path('pagos/iniciar/', iniciar_pago_suscripcion),
     path('pagos/webhook/<str:proveedor>/', webhook_pago),
-    path('pagos/estado/', estado_suscripcion),   
+    path('pagos/estado/', estado_suscripcion),
+    path('pagos/webpay/iniciar/', webpay_iniciar_suscripcion),
+    path('pagos/webpay/retorno/', webpay_retorno), 
 ]

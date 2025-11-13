@@ -1,9 +1,14 @@
 from django.db import models
 from django.utils import timezone
+import os
+import uuid
 
 # Create your models here.
 
-#CLASE KINESIOLOGO QUE CREA LA TABLA KINESIOLOGO EN LA BD POSTGRE
+def kx_profile_upload_path(instance, filename):
+    ext = os.path.splitext(filename)[1].lower()
+    return f"kinesiologos/{instance.id}/pefil{ext}"
+
 class kinesiologo (models.Model):
     ESTADO_VERIFICACION = [
         ('pendiente', 'pendiente'),
@@ -22,11 +27,11 @@ class kinesiologo (models.Model):
     estado_verificacion = models.CharField(max_length=20, choices=ESTADO_VERIFICACION, default='pendiente')
     fecha_creacion = models.DateTimeField(auto_now_add=True)
     fecha_actualizacion = models.DateTimeField(auto_now=True)
+    foto_perfil = models.ImageField(upload_to=kx_profile_upload_path, blank=True, null=True)
 
     def __str__(self):
         return f"{self.nombre} {self.apellido}"
 
-#CLASE PACIENTE QUE CREA LA TABLA PACIENTE EN LA BD POSTGRE
 class paciente(models.Model):
     nombre = models.CharField(max_length=100)
     apellido = models.CharField(max_length=100)
@@ -38,8 +43,7 @@ class paciente(models.Model):
 
     def __str__(self):
         return f"{self.nombre} {self.apellido}"
-    
-#CLASE CITA QUE CREA LA TABLA CITA EN LA BD POSTGRE
+
 class cita(models.Model):
     ESTADO_CITA = [
         ('pendiente', 'pendiente'),
@@ -56,8 +60,7 @@ class cita(models.Model):
 
     def __str__(self):
         return f"Cita {self.id} - {self.paciente} con {self.kinesiologo}"
-    
-#CLASE RESEÑA QUE CREA LA TABLA RESEÑA EN LA BD POSTGRE
+
 class reseña(models.Model):
     OPCIONES_SENTIMIENTO = [
         ('positiva', 'positiva'),
@@ -73,7 +76,6 @@ class reseña(models.Model):
     def __str__(self):
         return f"Reseña cita {self.cita.id} - {self.sentimiento}"
 
-#CLASE AGENDA QUE CREA LA TABLA AGENDA EN LA BD POSTGRE
 class agenda(models.Model):
     ESTADO_HORARIO = [
         ('disponible', 'disponible'),
@@ -96,7 +98,6 @@ class agenda(models.Model):
     def activa_para_reserva(self):
         return (self.estado == 'disponible' and self.inicio >= timezone.now())
 
-#CLASE METODOPAGO QUE CREA LA TABLA METODOPAGO EN LA BD POSTGRE
 class metodoPago(models.Model):
     nombre = models.CharField(max_length=100)
     codigo_interno = models.CharField(max_length=50, unique=True)
@@ -105,7 +106,6 @@ class metodoPago(models.Model):
     def __str__(self):
         return self.nombre
 
-#CLASE PAGOSUSCRIPCION QUE CREA LA TABLA PAGOSUSCRIPCION EN LA BD POSTGRE
 class pagoSuscripcion(models.Model):
     ESTADO_TRANSACCION = [
         ('pendiente', 'pendiente'),
@@ -132,3 +132,33 @@ class pagoSuscripcion(models.Model):
     @property
     def activa(self) -> bool:
         return self.estado == 'pagado' and self.fecha_expiracion and self.fecha_expiracion > timezone.now()
+
+def kx_doc_upload_path(instance, filename):
+    ext = os.path.splitext(filename)[1].lower()
+    name = f"{uuid.uuid4().hex}{ext}"
+    return f"kinesiologos/{instance.kinesiologo_id}/verificacion/{instance.tipo}/{name}"
+
+class documentoVerificacion(models.Model):
+    TIPOS = [
+        ('ID_FRENTE', 'Carnet frente'),
+        ('ID_REVERSO', 'Carnet reverso'),
+        ('TITULO', 'Título/diploma'),
+        ('CERTIFICADO', 'Certificado adicional'),
+        ('OTRO', 'Otro'),
+    ]
+
+    ESTADO = [
+        ('pendiente', 'pendiente'),
+        ('aprobado', 'aprobado'),
+        ('rechazado', 'rechazado'),
+    ]
+
+    kinesiologo = models.ForeignKey(kinesiologo, on_delete=models.CASCADE, related_name='documentos')
+    tipo = models.CharField(max_length=20, choices=TIPOS)
+    archivo = models.FileField(upload_to=kx_doc_upload_path)
+    estado = models.CharField(max_length=10, choices=ESTADO, default='pendiente')
+    comentario_revisor = models.TextField(blank=True, null=True)
+    fecha_subida = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.kinesiologo} - {self.tipo} - {self.estado}"

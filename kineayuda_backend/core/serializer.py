@@ -1,8 +1,9 @@
 from rest_framework import serializers
-from .models import kinesiologo, paciente, cita, reseña, agenda, metodoPago, pagoSuscripcion
+from .models import kinesiologo, paciente, cita, reseña, agenda, metodoPago, pagoSuscripcion, documentoVerificacion
 from django.utils import timezone
 from .modulo_ia import analizar_sentimiento
 from .utils.rut import normalizar_rut, formatear_rut
+from django.db import transaction
 
 class kinesiologoSerializer(serializers.ModelSerializer):
     class Meta:
@@ -142,3 +143,98 @@ class pagoSuscripcionSerializer(serializers.ModelSerializer):
         if value is None or value <= 0:
             raise serializers.ValidationError("El monto debe ser mayor a 0.")
         return value
+
+class kinesiologoFotoSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = kinesiologo
+        fields = ['id','foto_perfil']
+    
+    def validate_foto_perfil(self, file):
+        if not file:
+            return file
+        if file.size > 5 * 1024 * 1024:  # 5 MB limit
+            raise serializers.ValidationError("El tamaño de la imagen no debe exceder los 5 MB.")
+        valid_types = ['image/jpeg', 'image/png', 'image/webp']
+        if hasattr(file, 'content_type') and file.content_type not in valid_types:
+            raise serializers.ValidationError("Tipo de archivo no soportado. Use JPEG, PNG o WEBP.")
+        return file
+
+class documentoVerificacionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = documentoVerificacion
+        fields = '__all__'
+        read_only_fields = ['kinesiologo', 'fecha_subida', 'estado', 'comentario_revisor']
+
+        def validate_archivo(self, file):
+            if file.size > 10 * 1024 * 1024:
+                raise serializers.ValidationError("El tamaño del archivo no debe exceder los 10 MB.")
+            valid_types = ['image/jpeg', 'image/png', 'application/pdf', 'image/webp']
+            if hasattr(file, 'content_type') and file.content_type not in valid_types:
+                raise serializers.ValidationError("Tipo de archivo no soportado. Use JPEG, PNG, WEBP o PDF.")
+            return file
+
+class KinesiologoRegistroSerializer(serializers.Serializer):
+    nombre = serializers.CharField(max_length=100)
+    apellido = serializers.CharField(max_length=100)
+    nro_titulo = serializers.CharField(max_length=100)
+    rut = serializers.CharField(max_length=12)
+    doc_verificacion = serializers.CharField(max_length=50, required = False, allow_blank = True)
+    especialidad = serializers.CharField(max_length = 50)
+    
+    #Campos de los documentos de verificación
+    doc_id_frente = serializers.FileField(write_only=True, required=True)
+    doc_id_reverso = serializers.FileField(write_only=True, required=True)
+    doc_titulo = serializers.FileField(write_only=True, required=True)
+    doc_certificado = serializers.ListField(child=serializers.FileField(),write_only=True, required=False, allow_empty=True)
+
+    def validate_rut(self, value):
+        try:
+            return normalizar_rut(value)
+        except ValueError as e:
+            raise serializers.ValidationError(str(e))
+    
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        try:
+            data['rut'] = formatear_rut(data['rut'])
+        except Exception:
+            pass
+        return data
+    
+    @transaction.atomic
+    def create(self, validated_data):
+        #Crea el kinesiologo en estado pendiente y los documentos de verificación asociados
+        request = self.context['request']
+        user = getattr(request, 'user', None)
+        uid = getattr(user, 'uid', None)
+        email = getattr(user, 'email', None)
+
+        if not uid or not email:
+            raise serializers.ValidationError("Usuario no autenticado correctamente.")
+        
+        #pop a los datos de documentos de verificacion, que no pertenecen al modelo kinesiologo
+        doc_id_frente = validated_data.pop('doc_id_frente')
+        doc_id_reverso = validated_data.pop('doc_id_reverso')
+        doc_titulo = validated_data.pop('doc_titulo')
+        doc_certificados = validated_data.pop('doc_certificado', [])
+
+        #Se crea el kinesiologo
+        kx = kinesiologo.objects.create(
+            nombre=validated_data['nombre'],
+            apellido=validated_data['apellido'],
+            email=email,
+            firebase_ide=uid,
+            nro_titulo=validated_data['nro_titulo'],
+            rut=validated_data['rut'],
+            doc_verificacion=validated_data.get('doc_verificacion', ''),
+            especialidad=validated_data['especialidad'],
+            estado_verificacion='pendiente'
+        )
+
+        #Crear los documentos de verificación asociados
+        documentoVerificacion.objects.create(kinesiologo=kx, tipo='ID_FRENTE', archivo=doc_id_frente, estado='pendiente')
+        documentoVerificacion.objects.create(kinesiologo=kx, tipo='ID_REVERSO', archivo=doc_id_reverso, estado='pendiente')
+        documentoVerificacion.objects.create(kinesiologo=kx, tipo='TITULO', archivo=doc_titulo, estado='pendiente')
+        for cert in doc_certificados:
+            documentoVerificacion.objects.create(kinesiologo=kx, tipo='CERTIFICADO', archivo=cert, estado='pendiente')
+        return kx

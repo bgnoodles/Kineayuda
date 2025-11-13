@@ -9,17 +9,19 @@ from django.views.decorators.csrf import csrf_exempt
 from django.shortcuts import redirect
 from rest_framework import viewsets, status, mixins
 from rest_framework.response import Response
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, action
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.generics import ListAPIView
 from rest_framework.views import APIView
 from rest_framework.exceptions import PermissionDenied, ValidationError
-from .models import kinesiologo, paciente, cita, reseña, agenda, metodoPago, pagoSuscripcion
+from rest_framework.parsers import MultiPartParser, FormParser
+from .models import kinesiologo, paciente, cita, reseña, agenda, metodoPago, pagoSuscripcion, documentoVerificacion
 from firebase_admin import auth
-from .serializer import kinesiologoSerializer, pacienteSerializer, citaSerializer, reseñaSerializer, agendaSerializer, metodoPagoSerializer, pagoSuscripcionSerializer
+from .serializer import (kinesiologoSerializer, pacienteSerializer, citaSerializer, reseñaSerializer, agendaSerializer, metodoPagoSerializer, 
+                         pagoSuscripcionSerializer, documentoVerificacionSerializer, kinesiologoFotoSerializer, KinesiologoRegistroSerializer)
 from .utils.auth_helpers import get_kinesiologo_from_request, kinesio_tiene_suscripcion_activa
 from .payments.webpay import create_transaction, commit_transaction
-from .permissions import TieneSuscripcionActiva
+from .permissions import TieneSuscripcionActiva, EsKinesiologoVerificado
 
 # Create your views here.
 
@@ -45,6 +47,38 @@ class kinesiologoViewSet(viewsets.ModelViewSet):
         uid = self.request.user.uid
         #Asegura que el firebase_ide no cambie a otro valor
         serializer.save(firebase_ide=uid)
+    
+    @action(detail=False, methods=['patch'], url_path='foto', parser_classes=[MultiPartParser, FormParser])
+    def foto(self, request):
+        kx = get_kinesiologo_from_request(request)
+        if not kx:
+            return Response({'error': 'Kinesiologo no encontrado.'}, status=status.HTTP_404_NOT_FOUND)
+        ser = kinesiologoFotoSerializer(kx, data=request.data, partial=True)
+        ser.is_valid(raise_exception=True)
+        ser.save()
+        return Response(ser.data, status=status.HTTP_200_OK)
+
+    @action(
+        detail=False,
+        methods=['post'],
+        url_path='registro',
+        parser_classes=[MultiPartParser, FormParser],
+    )
+    def registro(self, request):
+
+        from core.utils.auth_helpers import get_kinesiologo_from_request
+
+        # Evitar duplicados
+        if get_kinesiologo_from_request(request):
+            return Response({"error": "Ya tienes un perfil creado."}, status=400)
+
+        ser = KinesiologoRegistroSerializer(data=request.data, context={'request': request})
+        ser.is_valid(raise_exception=True)
+        kx = ser.save()
+        return Response(
+            {"mensaje": "Registro enviado a verificación", "kinesiologo_id": kx.id},
+            status=status.HTTP_201_CREATED,
+        )
 
 class pacienteViewSet(viewsets.ModelViewSet):
     queryset = paciente.objects.all()
@@ -124,8 +158,8 @@ class AgendaViewSet(viewsets.ModelViewSet):
         Mutaciones (create/update/partial_update/destroy): requiere suscripción activa.
         """
         if self.action in ['create', 'update', 'partial_update', 'destroy']:
-            return [IsAuthenticated(), TieneSuscripcionActiva()]
-        return [IsAuthenticated()]
+            return [IsAuthenticated(), EsKinesiologoVerificado(),TieneSuscripcionActiva()]
+        return [IsAuthenticated(), EsKinesiologoVerificado()]
 
     def get_queryset(self):
         kx = get_kinesiologo_from_request(self.request)
@@ -435,3 +469,36 @@ def webpay_retorno(request):
         "estado": pago.estado,
         "fecha_expiracion": pago.fecha_expiracion
     }, status=200)
+
+class DocumentoVerificacionViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticated]
+    serializer_class = documentoVerificacionSerializer
+    parser_classes = [MultiPartParser, FormParser]
+
+    def get_queryset(self):
+        kx = get_kinesiologo_from_request(self.request)
+        if not kx:
+            return documentoVerificacion.objects.none()
+        return documentoVerificacion.objects.filter(kinesiologo=kx).order_by('-fecha_subida')
+    
+    def perform_create(self, serializer):
+        kx = get_kinesiologo_from_request(self.request)
+        if not kx:
+            raise PermissionDenied("Kinesiólogo no autenticado.")
+        serializer.save(kinesiologo=kx)
+
+class KinesiologoRegistroView(APIView):
+    permission_classes = [AllowAny]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request):
+        if get_kinesiologo_from_request(request):
+            return Response({"error": "Ya tienes un perfil registrado."}, status=400)
+        
+        serializer = KinesiologoRegistroSerializer(data=request.data, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        kx = serializer.save()
+        return Response(
+            {"mensaje": "Registro enviado a verificación", "kinesiologo_id": kx.id},
+            status=201
+        )

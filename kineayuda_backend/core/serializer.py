@@ -130,19 +130,6 @@ class metodoPagoSerializer(serializers.ModelSerializer):
         model = metodoPago
         fields = '__all__'
 
-class pagoSuscripcionSerializer(serializers.ModelSerializer):
-    metodo = metodoPagoSerializer(read_only=True)
-
-    class Meta:
-        model = pagoSuscripcion
-        fields = '__all__'
-        read_only_fields = ('kinesiologo', 'metodo', 'estado', 'orden_comercio', 
-                            'transa_id_externo', 'fecha_pago', 'fecha_expiracion', 'fecha_creacion', 'raw_payload')
-
-    def validate_monto(self, value):
-        if value is None or value <= 0:
-            raise serializers.ValidationError("El monto debe ser mayor a 0.")
-        return value
 
 class kinesiologoFotoSerializer(serializers.ModelSerializer):
     class Meta:

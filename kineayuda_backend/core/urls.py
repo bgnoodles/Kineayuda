@@ -1,8 +1,9 @@
 from rest_framework import routers
 from django.urls import path, include
 from .views import (kinesiologoViewSet, pacienteViewSet, citaViewSet, reseñaViewSet, verificar_firebase_token, me, AgendaViewSet, 
-                    AgendarCitaView, HorasDisponiblesView, KinesiologosPublicosView, ReseñasPublicasView, lista_metodos_pago, iniciar_pago_suscripcion, 
-                    webhook_pago, estado_suscripcion, webpay_iniciar_suscripcion, webpay_retorno, DocumentoVerificacionViewSet,)
+                    AgendarCitaView, HorasDisponiblesView, KinesiologosPublicosView, ReseñasPublicasView, lista_metodos_pago,
+                    estado_suscripcion, webpay_iniciar_suscripcion, webpay_retorno, DocumentoVerificacionViewSet, webpay_iniciar_pago_cita,
+                    webpay_retorno_pago_cita,)
 
 router = routers.DefaultRouter()
 router.register(r'kinesiologos', kinesiologoViewSet, basename='kinesiologo')
@@ -21,9 +22,10 @@ urlpatterns = [
     path('public/kinesiologos/<int:kinesiologo_id>/horas/', HorasDisponiblesView.as_view()),
     path('public/agendar/', AgendarCitaView.as_view()),
     path('pagos/metodos/', lista_metodos_pago),
-    path('pagos/iniciar/', iniciar_pago_suscripcion),
-    path('pagos/webhook/<str:proveedor>/', webhook_pago),
+    #path('pagos/webhook/<str:proveedor>/', webhook_pago),
     path('pagos/estado/', estado_suscripcion),
     path('pagos/webpay/iniciar/', webpay_iniciar_suscripcion),
     path('pagos/webpay/retorno/', webpay_retorno),
+    path('pagos/citas/webpay/iniciar/', webpay_iniciar_pago_cita),
+    path('pagos/citas/webpay/retorno/', webpay_retorno_pago_cita),
 ]

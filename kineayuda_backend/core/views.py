@@ -6,7 +6,7 @@ from django.utils import timezone
 from django.db import transaction
 from django.db.models import Q
 from django.views.decorators.csrf import csrf_exempt
-from django.shortcuts import redirect
+from django.shortcuts import redirect, get_object_or_404
 from rest_framework import viewsets, status, mixins
 from rest_framework.response import Response
 from rest_framework.decorators import api_view, permission_classes, action
@@ -15,13 +15,15 @@ from rest_framework.generics import ListAPIView
 from rest_framework.views import APIView
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.parsers import MultiPartParser, FormParser
-from .models import kinesiologo, paciente, cita, reseña, agenda, metodoPago, pagoSuscripcion, documentoVerificacion
+from .models import kinesiologo, paciente, cita, reseña, agenda, metodoPago, pagoSuscripcion, documentoVerificacion, pagoCita
 from firebase_admin import auth
 from .serializer import (kinesiologoSerializer, pacienteSerializer, citaSerializer, reseñaSerializer, agendaSerializer, metodoPagoSerializer, 
-                         pagoSuscripcionSerializer, documentoVerificacionSerializer, kinesiologoFotoSerializer, KinesiologoRegistroSerializer)
+                         documentoVerificacionSerializer, kinesiologoFotoSerializer, KinesiologoRegistroSerializer)
 from .utils.auth_helpers import get_kinesiologo_from_request, kinesio_tiene_suscripcion_activa
+from .utils.rut import normalizar_rut
 from .payments.webpay import create_transaction, commit_transaction
 from .permissions import TieneSuscripcionActiva, EsKinesiologoVerificado
+from dateutil.relativedelta import relativedelta
 
 # Create your views here.
 
@@ -270,45 +272,7 @@ def lista_metodos_pago(request):
     qs = metodoPago.objects.filter(activo=True)
     return Response(metodoPagoSerializer(qs, many=True).data, status=200)
 
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def iniciar_pago_suscripcion(request):
-    kx = get_kinesiologo_from_request(request)
-    if not kx:
-        return Response({"error": "Perfil de kinesiólogo no encontrado"}, status=404)
-
-    metodo_code = request.data.get('metodo')
-    monto = request.data.get('monto')
-
-    if not metodo_code or monto is None:
-        return Response({"error": "Campos 'metodo' y 'monto' son requeridos"}, status=400)
-
-    metodo = metodoPago.objects.filter(codigo_interno=metodo_code, activo=True).first()
-    if not metodo:
-        return Response({"error": "Método de pago no disponible"}, status=400)
-
-    # Generar identificador de orden interno
-    orden = str(uuid.uuid4())[:12]
-
-    pago = pagoSuscripcion.objects.create(
-        kinesiologo=kx,
-        metodo=metodo,
-        monto=monto,
-        estado='pendiente',
-        orden_comercio=orden,
-        fecha_creacion=timezone.now()
-    )
-
-    # Placeholder de URL (Transbank o MercadoPago)
-    redirect_url = f"https://sandbox.proveedor.com/pagar?orden={orden}"
-
-    return Response({
-        "mensaje": "Orden creada exitosamente",
-        "orden_comercio": orden,
-        "pago": pagoSuscripcionSerializer(pago).data,
-        "redirect_url": redirect_url
-    }, status=201)
-
+''' 
 @api_view(['POST'])
 @permission_classes([AllowAny])  # proveedor no manda token
 def webhook_pago(request, proveedor: str):
@@ -338,6 +302,8 @@ def webhook_pago(request, proveedor: str):
 
     pago.save()
     return Response({"mensaje": "actualizado correctamente"}, status=200)
+'''
+
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
@@ -354,12 +320,11 @@ def estado_suscripcion(request):
     return Response({
         "activa": activa,
         "vence": vence,
-        "ultimo_pago": pagoSuscripcionSerializer(ultimo_pago).data if ultimo_pago else None
     }, status=200)
 
 #1 INICIAR SUSCRIPCION
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, EsKinesiologoVerificado])
 def webpay_iniciar_suscripcion(request):
     """
     Body:
@@ -456,7 +421,7 @@ def webpay_retorno(request):
 
     if response_code == 0:
         pago.estado = 'pagado'
-        pago.fecha_expiracion = timezone.now() + timedelta(days=30)
+        pago.fecha_expiracion = timezone.now() + relativedelta(months=1)
     else:
         pago.estado = 'fallido'
 
@@ -502,3 +467,177 @@ class KinesiologoRegistroView(APIView):
             {"mensaje": "Registro enviado a verificación", "kinesiologo_id": kx.id},
             status=201
         )
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def webpay_iniciar_pago_cita(request):
+    data = request.data
+    agenda_id = data.get('agenda_id')
+    monto = data.get('monto')
+
+    if not agenda_id or not monto:
+        return Response({"error": "agenda_id y monto son obligatorios."}, status=400)
+
+    try:
+        monto = float(monto)
+    except ValueError:
+        return Response({"error": "Monto inválido."}, status=400)
+
+    # 1) Obtener el slot de agenda y validar disponibilidad
+    slot = get_object_or_404(agenda, id=agenda_id)
+
+    if slot.estado != 'disponible':
+        return Response({"error": "El horario ya no está disponible."}, status=400)
+
+    if slot.inicio <= timezone.now():
+        return Response({"error": "No se puede agendar un horario pasado."}, status=400)
+
+    kx = slot.kinesiologo
+
+    # 2) Crear (o buscar) paciente por email
+    email = data.get('email')
+    if not email:
+        return Response({"error": "El email del paciente es obligatorio."}, status=400)
+    
+    rut_raw = data.get("rut")
+    if not rut_raw:
+        return Response({"error": "El RUT del paciente es obligatorio."}, status=400)
+    try:
+        rut = normalizar_rut(rut_raw)
+    except Exception as e:
+        return Response({"error": f"RUT inválido: {str(e)}"}, status=400)
+    
+    paciente_obj, _ = paciente.objects.get_or_create(
+        email=email,
+        defaults={
+            "nombre": data.get("nombre", ""),
+            "apellido": data.get("apellido", ""),
+            "telefono": data.get("telefono", ""),
+            "fecha_nacimiento": data.get("fecha_nacimiento", "2000-01-01"),
+            "rut": rut,
+        }
+    )
+
+    # 3) Crear cita en estado pendiente / no pagada aún
+    nueva_cita = cita.objects.create(
+        paciente=paciente_obj,
+        kinesiologo=kx,
+        fecha_hora=slot.inicio,
+        estado='pendiente',
+        estado_pago='pendiente',
+    )
+
+    # 4) Crear pagoCita pendiente
+    pago = pagoCita.objects.create(
+        cita=nueva_cita,
+        kinesiologo=kx,
+        paciente=paciente_obj,
+        monto=monto,
+        estado='pendiente',
+    )
+
+    # 5) Generar buy_order y session_id
+    buy_order = f"CITA-{pago.id}"
+    session_id = f"PAC-{paciente_obj.id}"
+
+    pago.buy_order = buy_order
+    pago.session_id = session_id
+    pago.save()
+
+    # 6) Llamar a Webpay
+    return_url = request.build_absolute_uri('/api/pagos/citas/webpay/retorno/')
+    resp = create_transaction(
+        buy_order=buy_order,
+        session_id=session_id,
+        amount=monto,
+        return_url=return_url
+    )
+
+    # resp tiene .token y .url (según SDK)
+    token = getattr(resp, 'token', None) or resp.get('token')
+    url = getattr(resp, 'url', None) or resp.get('url')
+
+    if not token or not url:
+        return Response({"error": "Error al iniciar transacción con Webpay."}, status=500)
+
+    pago.token_ws = token
+    pago.save()
+
+    return Response({
+        "url": url,
+        "token": token,
+        "cita_id": nueva_cita.id
+    }, status=200)
+
+@api_view(['GET', 'POST'])
+@permission_classes([AllowAny])
+def webpay_retorno_pago_cita(request):
+    """
+    Webpay redirige aquí con token_ws.
+    Confirma el pago y actualiza cita + agenda.
+    """
+    token_ws = request.GET.get('token_ws') or request.POST.get('token_ws')
+    if not token_ws:
+        return Response({"error": "Falta token_ws."}, status=400)
+
+    # 1) Confirmar con Webpay
+    resp = commit_transaction(token_ws)
+
+    # Dependiendo del SDK, resp puede ser objeto o dict
+    status_tx = getattr(resp, 'status', None) or resp.get('status')
+    buy_order = getattr(resp, 'buy_order', None) or resp.get('buy_order')
+    response_code = getattr(resp, 'response_code', None) or resp.get('response_code')
+
+    # 2) Buscar pagoCita por buy_order
+    try:
+        pago = pagoCita.objects.select_related('cita', 'cita__kinesiologo').get(buy_order=buy_order)
+    except pagoCita.DoesNotExist:
+        return Response({"error": "Pago no encontrado."}, status=404)
+
+    pago.raw_payload = getattr(resp, 'json', None) if hasattr(resp, 'json') else None
+    pago.token_ws = token_ws
+
+    cita_obj = pago.cita
+    slot_qs = agenda.objects.filter(
+        kinesiologo=cita_obj.kinesiologo,
+        inicio=cita_obj.fecha_hora
+    )
+
+    # 3) Evaluar resultado
+    if status_tx == "AUTHORIZED" and response_code == 0:
+        pago.estado = 'pagado'
+        pago.fecha_pago = timezone.now()
+
+        cita_obj.estado_pago = 'pagado'
+        cita_obj.estado = 'pendiente'  # o 'confirmada' si agregas ese estado
+        cita_obj.save()
+
+        # marcar slot como reservado
+        slot = slot_qs.first()
+        slot.estado = 'reservado'
+        slot.cita = cita_obj
+        slot.paciente = pago.paciente
+        slot.save()
+
+        pago.save()
+
+        # Aquí podrías redirigir con HTML si fuera flujo web, pero como es API:
+        return Response({
+            "mensaje": "Pago de cita exitoso.",
+            "cita_id": cita_obj.id,
+            "estado_pago": cita_obj.estado_pago
+        }, status=200)
+
+    else:
+        pago.estado = 'fallido'
+        cita_obj.estado_pago = 'fallido'
+        cita_obj.estado = 'cancelada'
+        cita_obj.save()
+        slot_qs.update(estado='disponible')
+        pago.save()
+
+        return Response({
+            "mensaje": "Pago rechazado o fallido.",
+            "detalle": status_tx,
+            "codigo_respuesta": response_code
+        }, status=400)

@@ -9,12 +9,12 @@ def get_kinesiologo_from_request(request):
     return kinesiologo.objects.filter(firebase_ide=uid).first()
 
 def kinesio_tiene_suscripcion_activa(kx) -> bool:
-    """Retorna True si el kinesiologo tiene una suscripción pagada."""
+    """Retorna True si el kinesiologo tiene una suscripción válida."""
     if not kx:
         return False
-    ahora = timezone.now()
-    return pagoSuscripcion.objects.filter(
-        kinesiologo=kx,
-        estado='pagado',
-        fecha_expiracion__gt=ahora
-    ).exists()
+    ultimo_pago = (pagoSuscripcion.objects
+                    .filter(kinesiologo=kx, estado='pagado')
+                    .order_by('-fecha_expiracion')
+                    .first()
+    )
+    return bool(ultimo_pago and ultimo_pago.activa)

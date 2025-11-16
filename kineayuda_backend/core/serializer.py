@@ -104,6 +104,57 @@ class reseñaSerializer(serializers.ModelSerializer):
         sentimiento = analizar_sentimiento(texto) #devuelve 'positiva', 'neutral' o 'negativa'
         validated_data['sentimiento'] = sentimiento
         return super().create(validated_data)
+
+class ReseñaPublicaSerializer(serializers.Serializer):
+    rut = serializers.CharField(max_length=15)
+    comentario = serializers.CharField()
+
+    def validate(self, data):
+        rut_raw = data.get("rut")
+        cita_obj = self.context.get("cita")
+
+        if not cita_obj:
+            raise serializers.ValidationError({"cita": "Cita no encontrada en el contexto."})
+
+        try:
+            rut_norm = normalizar_rut(rut_raw)
+        except Exception as e:
+            raise serializers.ValidationError({"rut": f"RUT inválido: {str(e)}"})
+
+        # Verificar que el paciente exista y que la cita sea suya
+        try:
+            pac = paciente.objects.get(rut=rut_norm)
+        except paciente.DoesNotExist:
+            raise serializers.ValidationError({"rut": "No existe un paciente con este RUT."})
+
+        if cita_obj.paciente_id != pac.id:
+            raise serializers.ValidationError({"cita": "Esta cita no pertenece a este paciente."})
+
+        # Validar estado de la cita
+        if cita_obj.estado != "completada":
+            raise serializers.ValidationError({"cita": "Solo puedes reseñar citas COMPLETADAS."})
+
+        # Verificar que no exista reseña previa
+        if reseña.objects.filter(cita=cita_obj).exists():
+            raise serializers.ValidationError({"cita": "Ya existe una reseña para esta cita."})
+
+        # Guardamos objetos útiles
+        data["paciente_obj"] = pac
+        data["cita_obj"] = cita_obj
+        return data
+
+    def create(self, validated_data):
+        cita_obj = validated_data["cita_obj"]
+        comentario = validated_data["comentario"]
+
+        sentimiento = analizar_sentimiento(comentario)  # 'positiva', 'neutral' o 'negativa'
+
+        nueva_reseña = reseña.objects.create(
+            cita=cita_obj,
+            comentario=comentario,
+            sentimiento=sentimiento,
+        )
+        return nueva_reseña
     
 class agendaSerializer(serializers.ModelSerializer):
     class Meta:
@@ -225,3 +276,13 @@ class KinesiologoRegistroSerializer(serializers.Serializer):
         for cert in doc_certificados:
             documentoVerificacion.objects.create(kinesiologo=kx, tipo='CERTIFICADO', archivo=cert, estado='pendiente')
         return kx
+
+class CitaPublicaSerializer(serializers.ModelSerializer):
+    kinesiologo_nombre = serializers.SerializerMethodField()
+
+    class Meta:
+        model = cita
+        fields = ['id', 'kinesiologo_nombre', 'fecha_hora', 'estado', 'nota']
+
+    def get_kinesiologo_nombre(self, obj):
+        return f"{obj.kinesiologo.nombre} {obj.kinesiologo.apellido}"

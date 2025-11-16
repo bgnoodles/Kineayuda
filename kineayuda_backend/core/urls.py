@@ -3,7 +3,7 @@ from django.urls import path, include
 from .views import (kinesiologoViewSet, pacienteViewSet, citaViewSet, reseñaViewSet, verificar_firebase_token, me, AgendaViewSet, 
                     AgendarCitaView, HorasDisponiblesView, KinesiologosPublicosView, ReseñasPublicasView, lista_metodos_pago,
                     estado_suscripcion, webpay_iniciar_suscripcion, webpay_retorno, DocumentoVerificacionViewSet, webpay_iniciar_pago_cita,
-                    webpay_retorno_pago_cita,)
+                    webpay_retorno_pago_cita, CitasPorRutView, CrearReseñaPorCitaView)
 
 router = routers.DefaultRouter()
 router.register(r'kinesiologos', kinesiologoViewSet, basename='kinesiologo')
@@ -21,6 +21,8 @@ urlpatterns = [
     path('public/kinesiologos/<int:kinesiologo_id>/resenas/', ReseñasPublicasView.as_view()),
     path('public/kinesiologos/<int:kinesiologo_id>/horas/', HorasDisponiblesView.as_view()),
     path('public/agendar/', AgendarCitaView.as_view()),
+    path('public/paciente/<str:rut>/citas/', CitasPorRutView.as_view()),
+    path('public/citas/<int:cita_id>/resena/', CrearReseñaPorCitaView.as_view(), name='crear-resena-por-cita'),
     path('pagos/metodos/', lista_metodos_pago),
     #path('pagos/webhook/<str:proveedor>/', webhook_pago),
     path('pagos/estado/', estado_suscripcion),

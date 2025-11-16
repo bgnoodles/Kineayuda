@@ -4,7 +4,8 @@ from datetime import timedelta
 from django.conf import settings
 from django.utils import timezone
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Q, Count, Case, When, FloatField, Avg
+from django.db.models.functions import TruncDay, TruncWeek, TruncMonth
 from django.views.decorators.csrf import csrf_exempt
 from django.shortcuts import redirect, get_object_or_404
 from rest_framework import viewsets, status, mixins
@@ -18,7 +19,7 @@ from rest_framework.parsers import MultiPartParser, FormParser
 from .models import kinesiologo, paciente, cita, reseña, agenda, metodoPago, pagoSuscripcion, documentoVerificacion, pagoCita
 from firebase_admin import auth
 from .serializer import (kinesiologoSerializer, pacienteSerializer, citaSerializer, reseñaSerializer, agendaSerializer, metodoPagoSerializer, 
-                         documentoVerificacionSerializer, kinesiologoFotoSerializer, KinesiologoRegistroSerializer)
+                         documentoVerificacionSerializer, kinesiologoFotoSerializer, KinesiologoRegistroSerializer, CitaPublicaSerializer, ReseñaPublicaSerializer)
 from .utils.auth_helpers import get_kinesiologo_from_request, kinesio_tiene_suscripcion_activa
 from .utils.rut import normalizar_rut
 from .payments.webpay import create_transaction, commit_transaction
@@ -81,6 +82,101 @@ class kinesiologoViewSet(viewsets.ModelViewSet):
             {"mensaje": "Registro enviado a verificación", "kinesiologo_id": kx.id},
             status=status.HTTP_201_CREATED,
         )
+    @action(
+        detail=False,
+        methods=['get'],
+        url_path='metricas-resenas',
+        permission_classes=[IsAuthenticated],
+    )
+    def metricas_resenas(self, request):
+        """
+        GET /api/kinesiologos/metricas-resenas/?granularidad=mes&desde=2025-01-01&hasta=2025-12-31
+
+        granularidad: 'dia' | 'semana' | 'mes' (por defecto: 'mes')
+        desde / hasta: YYYY-MM-DD (opcionales)
+        """
+        kx = get_kinesiologo_from_request(request)
+        if not kx:
+            return Response({"detail": "Kinesiólogo no encontrado."}, status=status.HTTP_404_NOT_FOUND)
+
+        granularidad = request.query_params.get('granularidad', 'mes')
+        fecha_desde = request.query_params.get('desde')
+        fecha_hasta = request.query_params.get('hasta')
+
+        # Base: todas las reseñas de este kinesiólogo
+        qs = reseña.objects.filter(cita__kinesiologo=kx)
+
+        # Filtrar por rango de fechas (según fecha de la cita)
+        if fecha_desde:
+            qs = qs.filter(cita__fecha_hora__date__gte=fecha_desde)
+        if fecha_hasta:
+            qs = qs.filter(cita__fecha_hora__date__lte=fecha_hasta)
+
+        # Elegir cómo agrupar (día, semana o mes)
+        if granularidad == 'dia':
+            qs = qs.annotate(periodo=TruncDay('cita__fecha_hora'))
+        elif granularidad == 'semana':
+            qs = qs.annotate(periodo=TruncWeek('cita__fecha_hora'))
+        else:  # 'mes' por defecto
+            qs = qs.annotate(periodo=TruncMonth('cita__fecha_hora'))
+
+        # Score de satisfacción: positiva = +1, neutral = 0, negativa = -1
+        qs = qs.annotate(
+            score_val=Case(
+                When(sentimiento='positiva', then=1.0),
+                When(sentimiento='neutral', then=0.0),
+                When(sentimiento='negativa', then=-1.0),
+                output_field=FloatField(),
+            )
+        )
+
+        # Agregación por período
+        agg = (
+            qs.values('periodo')
+              .annotate(
+                  total=Count('id'),
+                  positivas=Count('id', filter=Q(sentimiento='positiva')),
+                  neutrales=Count('id', filter=Q(sentimiento='neutral')),
+                  negativas=Count('id', filter=Q(sentimiento='negativa')),
+                  score_promedio=Avg('score_val'),
+              )
+              .order_by('periodo')
+        )
+
+        # Resumen global
+        total = qs.count()
+        positivas_total = qs.filter(sentimiento='positiva').count()
+        neutrales_total = qs.filter(sentimiento='neutral').count()
+        negativas_total = qs.filter(sentimiento='negativa').count()
+
+        resumen = {
+            "total_reseñas": total,
+            "positivas": positivas_total,
+            "neutrales": neutrales_total,
+            "negativas": negativas_total,
+        }
+
+        # Serializar fechas a string (ISO) para que el front pinte fácil
+        series = [
+            {
+                "periodo": item["periodo"].date().isoformat() if granularidad == "dia" else item["periodo"].isoformat(),
+                "total": item["total"],
+                "positivas": item["positivas"],
+                "neutrales": item["neutrales"],
+                "negativas": item["negativas"],
+                "score_promedio": item["score_promedio"],
+            }
+            for item in agg
+        ]
+
+        return Response(
+            {
+                "granularidad": granularidad,
+                "resumen": resumen,
+                "series": series,
+            },
+            status=200,
+        )
 
 class pacienteViewSet(viewsets.ModelViewSet):
     queryset = paciente.objects.all()
@@ -114,6 +210,23 @@ class reseñaViewSet(viewsets.ModelViewSet):
             return reseña.objects.none()
         #Devuelve solo las reseñas de las citas del kinesiologo autenticado
         return reseña.objects.filter(cita__kinesiologo=kx).select_related('cita', 'cita__paciente')
+
+class CrearReseñaPorCitaView(APIView):
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    def post(self, request, cita_id):
+        cita_obj = get_object_or_404(cita, id=cita_id)
+        serializer = ReseñaPublicaSerializer(data=request.data, context={"cita": cita_obj})
+        serializer.is_valid(raise_exception=True)
+        reseña_obj = serializer.save() 
+
+        return Response({
+            "mensaje": "Reseña creada exitosamente.",
+            "reseña_id": reseña_obj.id,
+            "sentimiento": reseña_obj.sentimiento,
+        },
+        status=status.HTTP_201_CREATED)
 
 class KinesiologosPublicosView(ListAPIView):
     """Vista pública para listar todos los kinesiologos aprobados."""
@@ -641,3 +754,22 @@ def webpay_retorno_pago_cita(request):
             "detalle": status_tx,
             "codigo_respuesta": response_code
         }, status=400)
+
+class CitasPorRutView(APIView):
+    permission_classes = [AllowAny]
+    def get(self, request, rut):
+        """Devuelve las citas asociadas a un paciente identificado por su RUT."""
+        try:
+            rut_norm = normalizar_rut(rut)
+        except Exception as e:
+            return Response({"error": f"RUT inválido: {str(e)}"}, status=400)
+        
+        try:
+            paciente_obj = paciente.objects.get(rut=rut_norm)
+        except paciente.DoesNotExist:
+            return Response({"error": "Paciente no encontrado."}, status=404)
+        
+        #Traer citas del paciente
+        citas = cita.objects.filter(paciente=paciente_obj).order_by('-fecha_hora')
+        data = CitaPublicaSerializer(citas, many=True).data
+        return Response({"paciente": paciente_obj.nombre, "citas": data})

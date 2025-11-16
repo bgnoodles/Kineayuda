@@ -2,29 +2,43 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import torch
 import torch.nn.functional as F
 
-#Se carga el modelo y el tokenizador se utiliza nlptown/bert-base-multilingual-uncased-sentiment
-# que es un modelo BERT preentrenado para análisis de sentimientos en múltiples idiomas
-tokenizer = AutoTokenizer.from_pretrained("nlptown/bert-base-multilingual-uncased-sentiment")
-model = AutoModelForSequenceClassification.from_pretrained("nlptown/bert-base-multilingual-uncased-sentiment")
+# Cargamos un modelo público de sentimiento en español
+MODEL_NAME = "finiteautomata/beto-sentiment-analysis"
 
-def analizar_sentimiento(texto):
-    #Tokeniza el texto de entrada y lo convierte en tensores
-    inputs = tokenizer(texto, return_tensors="pt", truncation=True, padding=True)
-    
-    #Pasa los tensores a través del modelo para obtener las salidas
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME)
+
+LABELS_MAP = {
+    "NEG": "negativa",
+    "NEU": "neutral",
+    "POS": "positiva",
+}
+
+def analizar_sentimiento(texto: str) -> str:
+    """
+    Analiza el sentimiento de un texto en español y retorna:
+    'positiva', 'neutral' o 'negativa'.
+    """
+    # Tokenizar
+    inputs = tokenizer(
+        texto,
+        return_tensors="pt",
+        truncation=True,
+        padding=True,
+        max_length=256,
+    )
+
+    # Pasar por el modelo sin gradientes
     with torch.no_grad():
         outputs = model(**inputs)
-    
-    #Aplica softmax a las salidas para obtener probabilidades
-    probabilities = F.softmax(outputs.logits, dim=-1)
-    
-    #Obtiene la clase con la probabilidad más alta
-    predicted_class = torch.argmax(probabilities, dim=-1).item()
-    
-    #Mapea la clase predicha a una etiqueta de sentimiento
-    if predicted_class in [0, 1]:  # Clases 0 y 1 representan sentimientos negativos
-        return 'negativa'
-    elif predicted_class == 2:       # Clase 2 representa un sentimiento neutral
-        return 'neutral'
-    else:                            # Clases 3 y 4 representan sentimientos positivos
-        return 'positiva'
+        logits = outputs.logits
+
+    # Softmax para probabilidades
+    probs = F.softmax(logits, dim=-1)
+
+    # Índice de la clase más probable
+    pred_idx = probs.argmax(dim=-1).item()
+
+    # Convertimos índice -> etiqueta del modelo -> etiqueta nuestra
+    raw_label = model.config.id2label[pred_idx]  # 'NEG', 'NEU', 'POS'
+    return LABELS_MAP.get(raw_label, "neutral")
